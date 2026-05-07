@@ -13,12 +13,23 @@ import tempfile
 import time
 import shutil
 import requests
+import boto3
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+
+# ── Startup: Create cookies.txt from Env ──
+cookies_content = os.environ.get("YT_COOKIES_CONTENT", "")
+if cookies_content:
+    try:
+        with open("/tmp/yt_cookies.txt", "w") as f:
+            f.write(cookies_content)
+        print("[Cookies] yt_cookies.txt created from env")
+    except Exception as e:
+        print(f"[Cookies] Error creating file: {e}")
 
 # ── Self-Ping Keep-Alive (Render sleep prevent) ──────────────
 SELF_PING_INTERVAL = 25   # seconds (Render sleeps after 15 min inactivity)
@@ -69,6 +80,21 @@ JOBS = {}          # in-memory job store { job_id: { status, clips, error } }
 TMP_DIR = Path(tempfile.gettempdir()) / "clipwave"
 TMP_DIR.mkdir(exist_ok=True)
 
+# ── Cloudflare R2 Config ────────────────────────
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "clipwave-outputs")
+R2_ENDPOINT = os.environ.get("R2_ENDPOINT")  # https://<account_id>.r2.cloudflarestorage.com
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=R2_ENDPOINT,
+    aws_access_key_id=R2_ACCESS_KEY,
+    aws_secret_access_key=R2_SECRET_KEY
+)
+
+HF_SPACE_URL = os.environ.get("HF_SPACE_URL")
+
 CLIP_MIN = 40
 CLIP_MAX = 60
 CLIP_TARGET = 50
@@ -86,144 +112,44 @@ def cleanup_job_files(job_id):
         shutil.rmtree(job_dir, ignore_errors=True)
     JOBS.pop(job_id, None)
 
-# ── ML Clipper (same logic as local clipper.py) ──
+# ── HF + R2 Clipper ──
 def run_clipper(job_id, video_path):
     try:
-        import cv2
-        import numpy as np
-        import librosa
-        from scipy.ndimage import uniform_filter1d
+        update_job(job_id, status="analyzing", progress=30)
 
-        update_job(job_id, status="analyzing", progress=10)
-
-        job_dir = TMP_DIR / job_id
-        job_dir.mkdir(exist_ok=True)
-        clips_dir = job_dir / "clips"
-        clips_dir.mkdir(exist_ok=True)
-
-        # ── Get video info ──
-        cap = cv2.VideoCapture(str(video_path))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps
-        update_job(job_id, duration=round(duration), progress=15)
-
-        # ── Audio extraction ──
-        update_job(job_id, status="extracting_audio", progress=20)
-        tmp_audio = job_dir / "audio.wav"
-        try:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(video_path),
-                "-vn", "-ar", "8000", "-ac", "1",
-                "-f", "wav", str(tmp_audio), "-loglevel", "error"
-            ], check=True, timeout=120)
-            # Optimization: Load at 8000Hz (60% less RAM than 22050Hz)
-            # Enough for energy detection, significantly reduces memory footprint
-            y, sr = librosa.load(str(tmp_audio), sr=8000, mono=True)
-            rms = librosa.feature.rms(y=y, frame_length=sr*2, hop_length=sr)[0]
-            audio_rms = np.array(rms)
-        except Exception:
-            audio_rms = np.zeros(int(duration) + 1)
-
-        # ── Visual analysis (Optimized) ──
-        update_job(job_id, status="analyzing_scenes", progress=35)
-        # Sample every 1 second (fps * 1) instead of 0.3s to save CPU/RAM
-        sample_every = max(1, int(fps * 1))
-        prev_gray = None
-        visual_scores = np.zeros(int(duration) + 1)
-        frame_idx = 0
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % sample_every == 0:
-                # Resize to tiny 80x45 for extreme RAM efficiency
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.resize(gray, (80, 45))
-                if prev_gray is not None:
-                    diff = cv2.absdiff(gray, prev_gray).mean()
-                    sec = int(frame_idx / fps)
-                    if sec < len(visual_scores):
-                        visual_scores[sec] = max(visual_scores[sec], diff)
-                prev_gray = gray
-            frame_idx += 1
-        cap.release()
-
-        update_job(job_id, progress=55)
-
-        # ── Interest score ──
-        n = min(len(visual_scores), len(audio_rms))
-        def norm(x):
-            mn, mx = x.min(), x.max()
-            return (x - mn) / (mx - mn + 1e-8)
-
-        combined = 0.6 * norm(visual_scores[:n]) + 0.4 * norm(audio_rms[:n])
-        smoothed = uniform_filter1d(combined.astype(float), size=10)
-
-        # ── Find best segments ──
-        update_job(job_id, status="finding_highlights", progress=65)
-        used = set()
-        segments = []
-        for _ in range(MAX_CLIPS * 4):
-            best_score, best_start = -1, -1
-            for start in range(0, len(smoothed) - CLIP_MIN, 2):
-                if any(abs(start - u) < 90 for u in used):
-                    continue
-                end = min(start + CLIP_TARGET, len(smoothed) - 1)
-                if end - start < CLIP_MIN:
-                    continue
-                score = smoothed[start:end].mean()
-                if score > best_score:
-                    best_score, best_start = score, start
-            if best_start == -1:
-                break
-            end = min(best_start + CLIP_TARGET, len(smoothed) - 1)
-            segments.append({"start": best_start, "end": end,
-                             "duration": end - best_start, "score": float(best_score)})
-            used.add(best_start)
-            if len(segments) >= MAX_CLIPS:
-                break
-
-        segments.sort(key=lambda x: x["start"])
-
-        # ── Cut clips ──
-        update_job(job_id, status="cutting_clips", progress=75)
-        video_stem = Path(video_path).stem[:30]
+        # A) ML processing - HuggingFace ko bhejo
+        with open(video_path, "rb") as f:
+            response = requests.post(
+                f"{HF_SPACE_URL}/run/predict",
+                files={"video": f},
+                timeout=600
+            )
+        
+        if response.status_code != 200:
+            raise Exception(f"HF Space error: {response.text}")
+            
+        ml_results = response.json()["data"][0]  # Gradio output format
+        
+        update_job(job_id, status="cutting_clips", progress=70)
+        
         saved_clips = []
-
-        for i, seg in enumerate(segments):
-            fname = f"{video_stem}_Part{i+1}_t{seg['start']}s.mp4"
-            out_path = clips_dir / fname
-            try:
-                subprocess.run([
-                    "ffmpeg", "-y",
-                    "-ss", str(seg["start"]),
-                    "-i", str(video_path),
-                    "-t", str(seg["duration"]),
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-                    "-c:a", "aac", "-b:a", "96k",
-                    "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                    str(out_path), "-loglevel", "error"
-                ], check=True, timeout=300)
-                saved_clips.append({
-                    "name": fname,
-                    "part": f"Part {i+1}",
-                    "start": seg["start"],
-                    "end": seg["end"],
-                    "duration": seg["duration"],
-                    "score": round(seg["score"], 3),
-                    "download_url": f"/download/{job_id}/{fname}"
-                })
-            except Exception as e:
-                print(f"Clip {i+1} failed: {e}")
+        for i, clip_data in enumerate(ml_results):
+            clip_local_path = clip_data["path"]
+            clip_name = os.path.basename(clip_local_path)
+            
+            # B) File storage - Cloudflare R2 upload
+            s3.upload_file(clip_local_path, R2_BUCKET_NAME, f"{job_id}/{clip_name}")
+            
+            # Generate Public URL (Assuming bucket is public or using Presigned URL)
+            public_url = f"{R2_ENDPOINT}/{R2_BUCKET_NAME}/{job_id}/{clip_name}".replace("r2.cloudflarestorage.com", "r2.dev")
+            
+            saved_clips.append({
+                "name": clip_name,
+                "part": f"Part {i+1}",
+                "download_url": public_url
+            })
 
         update_job(job_id, status="done", progress=100, clips=saved_clips)
-
-        # Schedule cleanup
-        t = threading.Thread(target=cleanup_job_files, args=(job_id,), daemon=True)
-        t.start()
 
     except Exception as e:
         update_job(job_id, status="error", error=str(e), progress=0)
@@ -237,7 +163,8 @@ def download_video(job_id, url):
     update_job(job_id, status="downloading", progress=5)
     try:
         subprocess.run([
-            "yt-dlp",
+            "yt-dlp", 
+            "--cookies", "/tmp/yt_cookies.txt",
             "--format", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
             "--merge-output-format", "mp4",
             "--output", out_template,
@@ -338,6 +265,15 @@ def download_clip(job_id, filename):
 def ping():
     """Keep-alive endpoint — self-pinged every 25s to prevent Render sleep"""
     return jsonify({"status": "awake", "time": time.time()})
+
+@app.route("/admin/cookies", methods=["POST"])
+def upload_cookies():
+    """Update yt-dlp cookies.txt"""
+    if "cookies" not in request.files:
+        return jsonify({"error": "No file"}), 400
+    f = request.files["cookies"]
+    f.save("/tmp/yt_cookies.txt")
+    return jsonify({"message": "Cookies updated"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

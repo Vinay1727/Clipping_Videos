@@ -1,5 +1,5 @@
 // ── Config ──
-const API = import.meta.env.VITE_BACKEND_URL;
+const API = "https://your-render-url.onrender.com";
 
 let currentJobId = null;
 let pollInterval = null;
