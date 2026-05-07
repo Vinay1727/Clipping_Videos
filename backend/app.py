@@ -114,18 +114,21 @@ def run_clipper(job_id, video_path):
         try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", str(video_path),
-                "-vn", "-ar", "22050", "-ac", "1",
+                "-vn", "-ar", "8000", "-ac", "1",
                 "-f", "wav", str(tmp_audio), "-loglevel", "error"
             ], check=True, timeout=120)
-            y, sr = librosa.load(str(tmp_audio), sr=22050, mono=True)
+            # Optimization: Load at 8000Hz (60% less RAM than 22050Hz)
+            # Enough for energy detection, significantly reduces memory footprint
+            y, sr = librosa.load(str(tmp_audio), sr=8000, mono=True)
             rms = librosa.feature.rms(y=y, frame_length=sr*2, hop_length=sr)[0]
             audio_rms = np.array(rms)
         except Exception:
             audio_rms = np.zeros(int(duration) + 1)
 
-        # ── Visual analysis ──
+        # ── Visual analysis (Optimized) ──
         update_job(job_id, status="analyzing_scenes", progress=35)
-        sample_every = max(1, int(fps / 3))
+        # Sample every 1 second (fps * 1) instead of 0.3s to save CPU/RAM
+        sample_every = max(1, int(fps * 1))
         prev_gray = None
         visual_scores = np.zeros(int(duration) + 1)
         frame_idx = 0
@@ -136,8 +139,9 @@ def run_clipper(job_id, video_path):
             if not ret:
                 break
             if frame_idx % sample_every == 0:
+                # Resize to tiny 80x45 for extreme RAM efficiency
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                gray = cv2.resize(gray, (160, 90))
+                gray = cv2.resize(gray, (80, 45))
                 if prev_gray is not None:
                     diff = cv2.absdiff(gray, prev_gray).mean()
                     sec = int(frame_idx / fps)
@@ -198,8 +202,8 @@ def run_clipper(job_id, video_path):
                     "-ss", str(seg["start"]),
                     "-i", str(video_path),
                     "-t", str(seg["duration"]),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "26",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                    "-c:a", "aac", "-b:a", "96k",
                     "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
                     str(out_path), "-loglevel", "error"
                 ], check=True, timeout=300)
@@ -239,8 +243,10 @@ def download_video(job_id, url):
             "--output", out_template,
             "--no-playlist",
             "--no-check-certificates",
+            "--force-ipv4",
+            "--add-header", "Accept-Language: en-US,en;q=0.9",
             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "--extractor-args", "youtube:player-client=web,android;player-skip=web",
+            "--extractor-args", "youtube:player-client=ios,android;player-skip=web",
             url
         ], check=True, timeout=600)
 

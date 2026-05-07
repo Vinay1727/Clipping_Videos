@@ -3,7 +3,7 @@ flask-cors==4.0.1
 opencv-python-headless==4.10.0.84
 librosa==0.10.2
 scipy==1.13.1
-numpy==1.26.4
+numpy>=1.26.4
 yt-dlp>=2025.01.15
 gunicorn==22.0.0
 requests==2.32.3
