@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Web
+node_modules/
+.DS_Store
+dist/
+build/
+.vercel/

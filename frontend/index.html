@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClipWave — Auto Scene Clipper</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #080a0f;
+    --surface: #0f1318;
+    --card: #141820;
+    --border: #1e2530;
+    --accent: #e8ff47;
+    --accent2: #ff6b35;
+    --text: #f0f2f5;
+    --muted: #6b7585;
+    --success: #4ade80;
+    --font-display: 'Bebas Neue', sans-serif;
+    --font-body: 'DM Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Noise texture overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+
+  /* Grid lines bg */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 60px 60px;
+    opacity: 0.3;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── Header ── */
+  header {
+    padding: 48px 0 0;
+    text-align: center;
+  }
+
+  .logo-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent);
+    color: #000;
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 2px;
+    margin-bottom: 20px;
+  }
+
+  .logo-badge span { font-size: 8px; }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: clamp(64px, 12vw, 110px);
+    line-height: 0.9;
+    letter-spacing: 2px;
+    color: var(--text);
+    margin-bottom: 16px;
+  }
+
+  h1 em {
+    font-style: normal;
+    color: var(--accent);
+  }
+
+  .tagline {
+    font-size: 15px;
+    color: var(--muted);
+    font-weight: 300;
+    letter-spacing: 0.5px;
+    margin-bottom: 56px;
+  }
+
+  /* ── Stats bar ── */
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 40px;
+    margin-bottom: 52px;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    text-align: center;
+  }
+
+  .stat-num {
+    font-family: var(--font-display);
+    font-size: 36px;
+    color: var(--accent);
+    line-height: 1;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-top: 4px;
+  }
+
+  /* ── Main Card ── */
+  .main-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 40px;
+    margin-bottom: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .main-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+  }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 32px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .tab {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .tab:not(:last-child) {
+    border-right: 1px solid var(--border);
+  }
+
+  .tab.active {
+    background: var(--accent);
+    color: #000;
+  }
+
+  .tab:not(.active):hover {
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  /* ── Tab panels ── */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* ── URL Input ── */
+  .input-group {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .url-input {
+    flex: 1;
+    min-width: 200px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 14px;
+    padding: 16px 20px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .url-input::placeholder { color: var(--muted); }
+
+  .url-input:focus {
+    border-color: var(--accent);
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 3px;
+    font-family: var(--font-display);
+    font-size: 20px;
+    letter-spacing: 1px;
+    padding: 0 32px;
+    height: 54px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .btn-primary:hover {
+    background: #d4eb3c;
+    transform: translateY(-1px);
+  }
+
+  .btn-primary:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* ── Upload Zone ── */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 4px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(232, 255, 71, 0.03);
+  }
+
+  .upload-zone input[type=file] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .upload-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    display: block;
+  }
+
+  .upload-title {
+    font-family: var(--font-display);
+    font-size: 28px;
+    letter-spacing: 1px;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  .upload-sub {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .upload-filename {
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* ── Supported sites ── */
+  .supported {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .site-tag {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 3px 8px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Progress Section ── */
+  #progress-section {
+    display: none;
+    margin-top: 32px;
+  }
+
+  #progress-section.visible { display: block; }
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .progress-status {
+    font-family: var(--font-display);
+    font-size: 22px;
+    letter-spacing: 1px;
+    color: var(--accent);
+  }
+
+  .progress-pct {
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 300;
+  }
+
+  .progress-bar-track {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    height: 6px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width 0.5s ease;
+    width: 0%;
+  }
+
+  .progress-steps {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+
+  .step-pill {
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    transition: all 0.3s;
+  }
+
+  .step-pill.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(232,255,71,0.05);
+  }
+
+  .step-pill.done {
+    border-color: var(--success);
+    color: var(--success);
+    background: rgba(74,222,128,0.05);
+  }
+
+  /* ── Results ── */
+  #results-section {
+    display: none;
+    margin-top: 32px;
+  }
+
+  #results-section.visible { display: block; }
+
+  .results-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .results-title {
+    font-family: var(--font-display);
+    font-size: 28px;
+    letter-spacing: 1px;
+  }
+
+  .results-title em {
+    font-style: normal;
+    color: var(--accent);
+  }
+
+  .btn-reset {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 8px 16px;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-reset:hover {
+    border-color: var(--text);
+    color: var(--text);
+  }
+
+  .clips-grid {
+    display: grid;
+    gap: 12px;
+  }
+
+  .clip-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    transition: border-color 0.2s;
+    animation: slideIn 0.4s ease forwards;
+    opacity: 0;
+  }
+
+  .clip-card:hover { border-color: var(--accent); }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .clip-part {
+    font-family: var(--font-display);
+    font-size: 36px;
+    color: var(--accent);
+    letter-spacing: 1px;
+    min-width: 90px;
+    line-height: 1;
+  }
+
+  .clip-meta {
+    flex: 1;
+  }
+
+  .clip-name {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+
+  .clip-info {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .score-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .score-track {
+    width: 60px;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .score-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  .btn-download {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 2px;
+    font-family: var(--font-display);
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    padding: 10px 22px;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .btn-download:hover {
+    background: #d4eb3c;
+    transform: translateY(-1px);
+  }
+
+  /* ── Error ── */
+  .error-box {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin-top: 20px;
+    display: none;
+  }
+
+  .error-box.visible { display: block; }
+
+  .error-box p {
+    font-size: 13px;
+    color: #f87171;
+  }
+
+  /* ── How it works ── */
+  .how-section {
+    margin: 48px 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+  }
+
+  .how-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 24px;
+  }
+
+  .how-num {
+    font-family: var(--font-display);
+    font-size: 56px;
+    color: var(--border);
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+
+  .how-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+
+  .how-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* ── Footer ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 24px 0;
+    margin-top: 48px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.5px;
+    position: relative;
+    z-index: 1;
+  }
+
+  footer a { color: var(--accent); text-decoration: none; }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    .main-card { padding: 24px 20px; }
+    .stats { gap: 24px; }
+    h1 { font-size: 64px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div class="logo-badge"><span>★</span> ML-Powered <span>★</span></div>
+    <h1>CLIP<em>WAVE</em></h1>
+    <p class="tagline">Paste any URL · Get 40–60s highlight clips · Download instantly</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-num">40–60</div>
+      <div class="stat-label">Seconds per clip</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">5</div>
+      <div class="stat-label">Clips per video</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">9:16</div>
+      <div class="stat-label">Reels format</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">100%</div>
+      <div class="stat-label">Free</div>
+    </div>
+  </div>
+
+  <!-- Main Card -->
+  <div class="main-card">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('url')">🔗 &nbsp;URL / YouTube</button>
+      <button class="tab" onclick="switchTab('upload')">📁 &nbsp;Upload File</button>
+    </div>
+
+    <!-- URL Panel -->
+    <div class="panel active" id="panel-url">
+      <div class="input-group">
+        <input
+          class="url-input"
+          type="url"
+          id="url-input"
+          placeholder="https://youtube.com/watch?v=... or any streaming URL"
+        />
+        <button class="btn-primary" id="btn-url" onclick="submitUrl()">CLIP IT</button>
+      </div>
+      <div class="supported">
+        <span>Supports:</span>
+        <span class="site-tag">YouTube</span>
+        <span class="site-tag">Vimeo</span>
+        <span class="site-tag">Twitter/X</span>
+        <span class="site-tag">Instagram</span>
+        <span class="site-tag">Reddit</span>
+        <span class="site-tag">1000+ sites</span>
+      </div>
+    </div>
+
+    <!-- Upload Panel -->
+    <div class="panel" id="panel-upload">
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept=".mp4,.mkv,.avi,.mov,.m4v" onchange="fileSelected(this)"/>
+        <span class="upload-icon">🎬</span>
+        <div class="upload-title">DROP YOUR VIDEO</div>
+        <p class="upload-sub">MP4, MKV, AVI, MOV supported</p>
+        <div class="upload-filename" id="upload-filename"></div>
+      </div>
+      <button class="btn-primary" id="btn-upload" style="width:100%;margin-top:16px;font-size:22px;height:54px" onclick="submitUpload()" disabled>CLIP IT</button>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-section">
+      <div class="progress-header">
+        <span class="progress-status" id="status-text">PROCESSING</span>
+        <span class="progress-pct" id="pct-text">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-steps">
+        <span class="step-pill" id="step-downloading">Downloading</span>
+        <span class="step-pill" id="step-analyzing">Analyzing</span>
+        <span class="step-pill" id="step-finding">Finding highlights</span>
+        <span class="step-pill" id="step-cutting">Cutting clips</span>
+        <span class="step-pill" id="step-done">Ready!</span>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" id="error-box">
+      <p id="error-text">Something went wrong.</p>
+    </div>
+
+    <!-- Results -->
+    <div id="results-section">
+      <div class="results-header">
+        <div class="results-title">YOUR <em>CLIPS</em></div>
+        <button class="btn-reset" onclick="resetAll()">↩ New video</button>
+      </div>
+      <div class="clips-grid" id="clips-grid"></div>
+    </div>
+  </div>
+
+  <!-- How it works -->
+  <div class="how-section">
+    <div class="how-card">
+      <div class="how-num">01</div>
+      <div class="how-title">Paste or Upload</div>
+      <div class="how-desc">Any YouTube URL, streaming link, or upload your own video file directly.</div>
+    </div>
+    <div class="how-card">
+      <div class="how-num">02</div>
+      <div class="how-title">ML Scene Detection</div>
+      <div class="how-desc">Our model analyzes audio energy + visual activity to score every second.</div>
+    </div>
+    <div class="how-card">
+      <div class="how-num">03</div>
+      <div class="how-title">Auto Clip & Format</div>
+      <div class="how-desc">Top highlight windows cut to 40–60s and formatted to 9:16 Reels ratio.</div>
+    </div>
+    <div class="how-card">
+      <div class="how-num">04</div>
+      <div class="how-title">Download & Post</div>
+      <div class="how-desc">Download all clips labeled Part 1, Part 2... Ready for Instagram.</div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="container">
+    ClipWave — Built for Instagram creators &nbsp;·&nbsp;
+    Files auto-delete after 30 min &nbsp;·&nbsp;
+    <a href="#">Made with ML ⚡</a>
+  </div>
+</footer>
+
+<script>
+  // ── Config — CHANGE THIS to your Render backend URL ──
+  const API = "https://your-clipwave-api.onrender.com";
+
+  let currentJobId = null;
+  let pollInterval = null;
+  let selectedFile = null;
+
+  // ── Tab switching ──
+  function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', (i===0 && tab==='url') || (i===1 && tab==='upload')));
+    document.getElementById('panel-url').classList.toggle('active', tab==='url');
+    document.getElementById('panel-upload').classList.toggle('active', tab==='upload');
+  }
+
+  // ── File selected ──
+  function fileSelected(input) {
+    selectedFile = input.files[0];
+    if (selectedFile) {
+      document.getElementById('upload-filename').textContent = '✓ ' + selectedFile.name;
+      document.getElementById('btn-upload').disabled = false;
+    }
+  }
+
+  // Drag & drop
+  const zone = document.getElementById('upload-zone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    const f = e.dataTransfer.files[0];
+    if (f) {
+      document.getElementById('file-input').files = e.dataTransfer.files;
+      fileSelected({ files: [f] });
+    }
+  });
+
+  // ── Submit URL ──
+  async function submitUrl() {
+    const url = document.getElementById('url-input').value.trim();
+    if (!url) return alert('Please paste a URL first!');
+    document.getElementById('btn-url').disabled = true;
+    showError(false);
+    showProgress(true);
+
+    try {
+      const res = await fetch(`${API}/clip/url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      currentJobId = data.job_id;
+      startPolling();
+    } catch (e) {
+      showError(true, e.message);
+      showProgress(false);
+      document.getElementById('btn-url').disabled = false;
+    }
+  }
+
+  // ── Submit Upload ──
+  async function submitUpload() {
+    if (!selectedFile) return;
+    document.getElementById('btn-upload').disabled = true;
+    showError(false);
+    showProgress(true);
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+      const res = await fetch(`${API}/clip/upload`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      currentJobId = data.job_id;
+      startPolling();
+    } catch (e) {
+      showError(true, e.message);
+      showProgress(false);
+      document.getElementById('btn-upload').disabled = false;
+    }
+  }
+
+  // ── Polling ──
+  function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(pollStatus, 2500);
+  }
+
+  async function pollStatus() {
+    try {
+      const res = await fetch(`${API}/status/${currentJobId}`);
+      const job = await res.json();
+      updateProgress(job);
+
+      if (job.status === 'done') {
+        clearInterval(pollInterval);
+        showResults(job.clips);
+      } else if (job.status === 'error') {
+        clearInterval(pollInterval);
+        showProgress(false);
+        showError(true, job.error || 'Processing failed');
+        document.getElementById('btn-url').disabled = false;
+        document.getElementById('btn-upload').disabled = false;
+      }
+    } catch(e) {
+      console.error('Poll error:', e);
+    }
+  }
+
+  const STATUS_MAP = {
+    queued: { label: 'QUEUED', steps: [] },
+    downloading: { label: 'DOWNLOADING', steps: ['downloading'] },
+    analyzing: { label: 'ANALYZING', steps: ['downloading', 'analyzing'] },
+    extracting_audio: { label: 'READING AUDIO', steps: ['downloading', 'analyzing'] },
+    analyzing_scenes: { label: 'READING SCENES', steps: ['downloading', 'analyzing'] },
+    finding_highlights: { label: 'FINDING HIGHLIGHTS', steps: ['downloading', 'analyzing', 'finding'] },
+    cutting_clips: { label: 'CUTTING CLIPS', steps: ['downloading', 'analyzing', 'finding', 'cutting'] },
+    done: { label: 'DONE!', steps: ['downloading', 'analyzing', 'finding', 'cutting', 'done'] }
+  };
+
+  function updateProgress(job) {
+    const info = STATUS_MAP[job.status] || { label: job.status.toUpperCase(), steps: [] };
+    document.getElementById('status-text').textContent = info.label;
+    document.getElementById('pct-text').textContent = (job.progress || 0) + '%';
+    document.getElementById('progress-fill').style.width = (job.progress || 0) + '%';
+
+    ['downloading','analyzing','finding','cutting','done'].forEach(s => {
+      const el = document.getElementById('step-' + s);
+      const isDone = info.steps.includes(s) && job.status !== s.replace('-','_');
+      const isActive = job.status.includes(s.substring(0,6));
+      el.className = 'step-pill' + (isDone ? ' done' : isActive ? ' active' : '');
+    });
+  }
+
+  // ── Show results ──
+  function showResults(clips) {
+    showProgress(false);
+    document.getElementById('results-section').classList.add('visible');
+    const grid = document.getElementById('clips-grid');
+    grid.innerHTML = '';
+
+    clips.forEach((clip, i) => {
+      const scoreWidth = Math.round(clip.score * 100);
+      const card = document.createElement('div');
+      card.className = 'clip-card';
+      card.style.animationDelay = (i * 0.1) + 's';
+      card.innerHTML = `
+        <div class="clip-part">${clip.part.toUpperCase()}</div>
+        <div class="clip-meta">
+          <div class="clip-name">${clip.name}</div>
+          <div class="clip-info">
+            <span>⏱ ${clip.duration}s</span>
+            <span>📍 ${formatTime(clip.start)} → ${formatTime(clip.end)}</span>
+            <div class="score-bar">
+              <span>Score</span>
+              <div class="score-track"><div class="score-fill" style="width:${scoreWidth}%"></div></div>
+              <span>${scoreWidth}%</span>
+            </div>
+          </div>
+        </div>
+        <a class="btn-download" href="${API}${clip.download_url}" download="${clip.name}">DOWNLOAD</a>
+      `;
+      grid.appendChild(card);
+    });
+  }
+
+  function formatTime(sec) {
+    const m = Math.floor(sec/60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2,'0')}`;
+  }
+
+  // ── UI helpers ──
+  function showProgress(show) {
+    document.getElementById('progress-section').classList.toggle('visible', show);
+  }
+
+  function showError(show, msg='') {
+    const box = document.getElementById('error-box');
+    box.classList.toggle('visible', show);
+    if (msg) document.getElementById('error-text').textContent = '⚠ ' + msg;
+  }
+
+  function resetAll() {
+    currentJobId = null;
+    if (pollInterval) clearInterval(pollInterval);
+    document.getElementById('url-input').value = '';
+    document.getElementById('upload-filename').textContent = '';
+    document.getElementById('btn-url').disabled = false;
+    document.getElementById('btn-upload').disabled = true;
+    selectedFile = null;
+    showProgress(false);
+    showError(false);
+    document.getElementById('results-section').classList.remove('visible');
+    document.getElementById('progress-fill').style.width = '0%';
+  }
+</script>
+</body>
+</html>
