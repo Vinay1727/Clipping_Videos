@@ -238,7 +238,9 @@ def download_video(job_id, url):
             "--merge-output-format", "mp4",
             "--output", out_template,
             "--no-playlist",
-            "--quiet",
+            "--no-check-certificates",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "--extractor-args", "youtube:player-client=web,android;player-skip=web",
             url
         ], check=True, timeout=600)
 
@@ -250,7 +252,9 @@ def download_video(job_id, url):
     except subprocess.TimeoutExpired:
         raise Exception("Video download timed out — try a shorter video")
     except subprocess.CalledProcessError as e:
-        raise Exception(f"Download failed — URL may be private or unsupported")
+        # Capture actual yt-dlp error for logs
+        print(f"[yt-dlp Error] Command failed with code {e.returncode}")
+        raise Exception(f"Download failed: YouTube is blocking this request. Try a different video or try again later.")
 
 def process_job(job_id, url=None, file_path=None):
     """Full pipeline: download (if URL) → clip → done"""
