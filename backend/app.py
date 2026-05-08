@@ -35,12 +35,12 @@ app = Flask(__name__)
 CORS(app)
 
 # ── Startup: Create cookies.txt from Env ──
-cookies_content = os.environ.get("YT_COOKIES_CONTENT", "")
+cookies_content = os.environ.get("YT_COOKIES_CONTENT", "").strip()
 if cookies_content:
     try:
         with open(COOKIE_PATH, "w") as f:
             f.write(cookies_content)
-        print(f"[Cookies] Cookies created at {COOKIE_PATH}")
+        print(f"[Cookies] Cookies file created at {COOKIE_PATH}")
     except Exception as e:
         print(f"[Cookies] Error creating file: {e}")
 
