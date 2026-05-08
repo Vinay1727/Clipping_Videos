@@ -17,6 +17,17 @@ import boto3
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from dotenv import load_dotenv
+from gradio_client import Client, handle_file
+
+# Load .env file
+load_dotenv()
+
+# ── Config ──────────────────────────────────────
+JOBS = {}          # in-memory job store { job_id: { status, clips, error } }
+TMP_DIR = Path(tempfile.gettempdir()) / "clipwave"
+TMP_DIR.mkdir(exist_ok=True)
+COOKIE_PATH = TMP_DIR / "yt_cookies.txt"
 
 app = Flask(__name__)
 CORS(app)
@@ -25,9 +36,9 @@ CORS(app)
 cookies_content = os.environ.get("YT_COOKIES_CONTENT", "")
 if cookies_content:
     try:
-        with open("/tmp/yt_cookies.txt", "w") as f:
+        with open(COOKIE_PATH, "w") as f:
             f.write(cookies_content)
-        print("[Cookies] yt_cookies.txt created from env")
+        print(f"[Cookies] Cookies created at {COOKIE_PATH}")
     except Exception as e:
         print(f"[Cookies] Error creating file: {e}")
 
@@ -75,16 +86,12 @@ def start_keepalive():
 
 start_keepalive()
 
-# ── Config ──────────────────────────────────────
-JOBS = {}          # in-memory job store { job_id: { status, clips, error } }
-TMP_DIR = Path(tempfile.gettempdir()) / "clipwave"
-TMP_DIR.mkdir(exist_ok=True)
-
 # ── Cloudflare R2 Config ────────────────────────
-R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
-R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
-R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "clipwave-outputs")
-R2_ENDPOINT = os.environ.get("R2_ENDPOINT")  # https://<account_id>.r2.cloudflarestorage.com
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "").strip()
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "").strip()
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "").strip()
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "clipwave-outputs").strip()
+R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 s3 = boto3.client(
     "s3",
@@ -117,31 +124,46 @@ def run_clipper(job_id, video_path):
     try:
         update_job(job_id, status="analyzing", progress=30)
 
-        # A) ML processing - HuggingFace ko bhejo
-        with open(video_path, "rb") as f:
-            response = requests.post(
-                f"{HF_SPACE_URL}/run/predict",
-                files={"video": f},
-                timeout=600
-            )
+        # A) ML processing - HuggingFace ko bhejo (Using Gradio Client)
+        client = Client(HF_SPACE_URL)
+        result = client.predict(
+            handle_file(str(video_path)),
+            fn_index=0
+        )
         
-        if response.status_code != 200:
-            raise Exception(f"HF Space error: {response.text}")
+        # Gradio client returns the result directly
+        ml_results = result 
+        print(f"DEBUG: ML Result from Engine: {ml_results}")
+        
+        # Agar ML engine ne string bheji hai, matlab koi error hua hai
+        if isinstance(ml_results, str):
+            raise Exception(f"ML Engine Error: {ml_results}")
             
-        ml_results = response.json()["data"][0]  # Gradio output format
-        
+        if not isinstance(ml_results, list):
+            raise Exception(f"Expected list from ML engine, but got {type(ml_results).__name__}")
+
         update_job(job_id, status="cutting_clips", progress=70)
         
         saved_clips = []
         for i, clip_data in enumerate(ml_results):
-            clip_local_path = clip_data["path"]
-            clip_name = os.path.basename(clip_local_path)
+            # Agar list of strings aa rahi hai (jo ki ho raha hai)
+            if isinstance(clip_data, str):
+                clip_local_path = clip_data
+                clip_label = f"Clip {i+1}"
+            # Agar list of dicts aa rahi hai
+            else:
+                clip_local_path = clip_data.get("path")
+                clip_label = clip_data.get("label", f"Part {i+1}")
+
+            if not clip_local_path: continue
+            
+            clip_name = f"clip_{job_id}_{i+1}.mp4"
             
             # B) File storage - Cloudflare R2 upload
             s3.upload_file(clip_local_path, R2_BUCKET_NAME, f"{job_id}/{clip_name}")
             
-            # Generate Public URL (Assuming bucket is public or using Presigned URL)
-            public_url = f"{R2_ENDPOINT}/{R2_BUCKET_NAME}/{job_id}/{clip_name}".replace("r2.cloudflarestorage.com", "r2.dev")
+            # Generate Public URL (Standard R2 public format points directly to bucket root)
+            public_url = f"https://pub-{R2_ACCOUNT_ID}.r2.dev/{job_id}/{clip_name}"
             
             saved_clips.append({
                 "name": clip_name,
@@ -164,7 +186,7 @@ def download_video(job_id, url):
     try:
         subprocess.run([
             "yt-dlp", 
-            "--cookies", "/tmp/yt_cookies.txt",
+            "--cookies", str(COOKIE_PATH),
             "--format", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
             "--merge-output-format", "mp4",
             "--output", out_template,
@@ -272,7 +294,7 @@ def upload_cookies():
     if "cookies" not in request.files:
         return jsonify({"error": "No file"}), 400
     f = request.files["cookies"]
-    f.save("/tmp/yt_cookies.txt")
+    f.save(str(COOKIE_PATH))
     return jsonify({"message": "Cookies updated"})
 
 if __name__ == "__main__":
