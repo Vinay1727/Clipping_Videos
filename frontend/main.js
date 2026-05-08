@@ -1,5 +1,5 @@
 // ── Config ──
-const API = "http://127.0.0.1:5000";
+const API = import.meta.env.VITE_BACKEND_URL;
 
 let currentJobId = null;
 let pollInterval = null;
