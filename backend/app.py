@@ -130,7 +130,7 @@ def run_clipper(job_id, video_path):
         client = Client(HF_SPACE_URL)
         result = client.predict(
             handle_file(str(video_path)),
-            fn_index=0
+            api_name="/predict"
         )
         
         # Gradio client returns the result directly
