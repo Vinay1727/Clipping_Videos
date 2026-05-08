@@ -93,6 +93,7 @@ R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "").strip()
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "").strip()
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "").strip()
 R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "clipwave-outputs").strip()
+R2_PUBLIC_URL = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
 R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 s3 = boto3.client(
@@ -121,54 +122,116 @@ def cleanup_job_files(job_id):
         shutil.rmtree(job_dir, ignore_errors=True)
     JOBS.pop(job_id, None)
 
+
+
+def get_stream_url_via_piped(youtube_url):
+    """Piped API se direct stream URL lo — no bot detection"""
+    # Extract video ID
+    if "v=" in youtube_url:
+        video_id = youtube_url.split("v=")[-1].split("&")[0]
+    elif "youtu.be/" in youtube_url:
+        video_id = youtube_url.split("/")[-1].split("?")[0]
+    else:
+        video_id = youtube_url.split("/")[-1]
+    
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.adminforge.de", 
+        "https://piped-api.garudalinux.org"
+    ]
+    
+    for instance in piped_instances:
+        try:
+            r = requests.get(f"{instance}/streams/{video_id}", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                streams = data.get("videoStreams", [])
+                
+                # 720p ya usse kam prefer karo
+                for s in streams:
+                    if s.get("quality") in ["720p", "480p", "360p"]:
+                        return s["url"], data.get("title", "video")
+                
+                if streams:
+                    return streams[0]["url"], data.get("title", "video")
+        except Exception as e:
+            print(f"[Piped] {instance} failed: {e}")
+            continue
+    
+    raise Exception("YouTube video access nahi ho pa raha — sabhi Piped instances fail")
+
+def get_video_stream(job_id, url):
+    """
+    Video download NAHI karta — sirf stream URL return karta hai
+    ffmpeg directly stream se clip kaatega
+    """
+    update_job(job_id, status="getting_stream", progress=5)
+    
+    if "youtube.com" in url or "youtu.be" in url:
+        stream_url, title = get_stream_url_via_piped(url)
+        return stream_url, title
+    else:
+        # Direct URL (Drive, direct mp4 link) — as-is return karo
+        return url, "video"
+
+from botocore.config import Config
+
+def upload_to_r2(local_path, filename):
+    """Clip ko R2 mein upload karo aur public URL return karo"""
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["R2_SECRET_KEY"],
+        config=Config(signature_version="s3v4"),
+        region_name="auto"
+    )
+    
+    bucket = os.environ["R2_BUCKET_NAME"]
+    s3.upload_file(
+        local_path, 
+        bucket, 
+        filename,
+        ExtraArgs={"ContentType": "video/mp4"}
+    )
+    
+    public_url = os.environ["R2_PUBLIC_URL"]
+    return f"{public_url}/{filename}"
+
 # ── HF + R2 Clipper ──
-def run_clipper(job_id, video_path):
+def run_clipper(job_id, video_input, is_stream=True):
     try:
         update_job(job_id, status="analyzing", progress=30)
 
-        # A) ML processing - HuggingFace ko bhejo (Using Gradio Client)
+        # A) ML processing - HuggingFace ko bhejo
         client = Client(HF_SPACE_URL)
+        
+        # Agar stream hai toh direct string, agar upload hai toh handle_file
+        hf_input = video_input if is_stream else handle_file(str(video_input))
+        
         result = client.predict(
-            handle_file(str(video_path)),
+            hf_input,
             api_name="/predict"
         )
         
-        # Gradio client returns the result directly
         ml_results = result 
-        print(f"DEBUG: ML Result from Engine: {ml_results}")
-        
-        # Agar ML engine ne string bheji hai, matlab koi error hua hai
         if isinstance(ml_results, str):
             raise Exception(f"ML Engine Error: {ml_results}")
             
-        if not isinstance(ml_results, list):
-            raise Exception(f"Expected list from ML engine, but got {type(ml_results).__name__}")
-
         update_job(job_id, status="cutting_clips", progress=70)
         
         saved_clips = []
         for i, clip_data in enumerate(ml_results):
-            # Agar list of strings aa rahi hai (jo ki ho raha hai)
-            if isinstance(clip_data, str):
-                clip_local_path = clip_data
-                clip_label = f"Clip {i+1}"
-            # Agar list of dicts aa rahi hai
-            else:
-                clip_local_path = clip_data.get("path")
-                clip_label = clip_data.get("label", f"Part {i+1}")
-
+            clip_local_path = clip_data if isinstance(clip_data, str) else clip_data.get("path")
             if not clip_local_path: continue
             
-            clip_name = f"clip_{job_id}_{i+1}.mp4"
+            clip_filename = f"{job_id}/clip_{i+1}.mp4"
             
-            # B) File storage - Cloudflare R2 upload
-            s3.upload_file(clip_local_path, R2_BUCKET_NAME, f"{job_id}/{clip_name}")
-            
-            # Generate Public URL (Standard R2 public format points directly to bucket root)
-            public_url = f"https://pub-{R2_ACCOUNT_ID}.r2.dev/{job_id}/{clip_name}"
+            # B) File storage - Cloudflare R2 upload (Using new function)
+            public_url = upload_to_r2(clip_local_path, clip_filename)
             
             saved_clips.append({
-                "name": clip_name,
+                "name": f"clip_{i+1}.mp4",
                 "part": f"Part {i+1}",
                 "download_url": public_url
             })
@@ -178,49 +241,16 @@ def run_clipper(job_id, video_path):
     except Exception as e:
         update_job(job_id, status="error", error=str(e), progress=0)
 
-def download_video(job_id, url):
-    """Download from YouTube or any streaming URL using yt-dlp"""
-    job_dir = TMP_DIR / job_id
-    job_dir.mkdir(exist_ok=True)
-    out_template = str(job_dir / "video.%(ext)s")
-
-    update_job(job_id, status="downloading", progress=5)
-    try:
-        subprocess.run([
-            "yt-dlp", 
-            "--cookies", str(COOKIE_PATH),
-            "--format", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-            "--merge-output-format", "mp4",
-            "--output", out_template,
-            "--no-playlist",
-            "--no-check-certificates",
-            "--force-ipv4",
-            "--add-header", "Accept-Language: en-US,en;q=0.9",
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "--extractor-args", "youtube:player-client=ios,android;player-skip=web",
-            url
-        ], check=True, timeout=600)
-
-        # Find downloaded file
-        for f in job_dir.iterdir():
-            if f.suffix in (".mp4", ".mkv", ".avi", ".webm"):
-                return f
-        raise FileNotFoundError("Download completed but no video file found")
-    except subprocess.TimeoutExpired:
-        raise Exception("Video download timed out — try a shorter video")
-    except subprocess.CalledProcessError as e:
-        # Capture actual yt-dlp error for logs
-        print(f"[yt-dlp Error] Command failed with code {e.returncode}")
-        raise Exception(f"Download failed: YouTube is blocking this request. Try a different video or try again later.")
-
 def process_job(job_id, url=None, file_path=None):
-    """Full pipeline: download (if URL) → clip → done"""
+    """Full pipeline: get stream (if URL) → clip → done"""
     try:
         if url:
-            video_path = download_video(job_id, url)
+            # Stream URL lo — download mat karo
+            stream_url, title = get_video_stream(job_id, url)
+            run_clipper(job_id, stream_url, is_stream=True)
         else:
-            video_path = file_path
-        run_clipper(job_id, video_path)
+            # User uploaded file — R2 se direct path
+            run_clipper(job_id, file_path, is_stream=False)
     except Exception as e:
         update_job(job_id, status="error", error=str(e), progress=0)
 
