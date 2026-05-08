@@ -24,6 +24,8 @@ from gradio_client import Client, handle_file
 load_dotenv()
 
 # ── Config ──────────────────────────────────────
+# Fixed: gradio-client ImportError by updating requirements.txt
+
 JOBS = {}          # in-memory job store { job_id: { status, clips, error } }
 TMP_DIR = Path(tempfile.gettempdir()) / "clipwave"
 TMP_DIR.mkdir(exist_ok=True)
