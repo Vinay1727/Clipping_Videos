@@ -1,5 +1,5 @@
 // ── Config ──
-const API = "https://your-render-url.onrender.com";
+const API = "http://127.0.0.1:5000";
 
 let currentJobId = null;
 let pollInterval = null;
@@ -163,7 +163,7 @@ function showResults(clips) {
             </div>
           </div>
         </div>
-        <a class="btn-download" href="${API}${clip.download_url}" download="${clip.name}">DOWNLOAD</a>
+        <a class="btn-download" href="${clip.download_url}" target="_blank" download="${clip.name}">DOWNLOAD</a>
       `;
     grid.appendChild(card);
   });
